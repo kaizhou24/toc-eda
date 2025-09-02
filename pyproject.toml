@@ -1,0 +1,19 @@
+[project]
+name = "tree-of-circuits"
+version = "0.1.0"
+description = "Data loading and parsing tools for circuit analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scipy",
+    "scikit-learn"
+]
+authors = [
+    {name = "Kai Zhou", email = "kaizhou@example.com"}
+]
+license = {text = "MIT"}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
