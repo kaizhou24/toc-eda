@@ -41,10 +41,15 @@ def load_thought_labels(filepath: Path) -> List[Dict[str, Any]]:
 
 def parse_circuit_filename(filename: str) -> Tuple[int, int]:
     """Parses circuit filename to extract thought and variation indices."""
-    pattern = r'(\d+)_th_thought_(\d+)_th_variation\.png\.json'
+    # New pattern: XX_thought_YY_variation.json
+    pattern = r'(\d+)_thought_(\d+)_variation\.json'
     match = re.match(pattern, filename)
     if not match:
-        raise ValueError(f"Filename doesn't match expected pattern: {filename}")
+        # Try old pattern for backward compatibility
+        old_pattern = r'(\d+)_th_thought_(\d+)_th_variation\.png\.json'
+        match = re.match(old_pattern, filename)
+        if not match:
+            raise ValueError(f"Filename doesn't match expected pattern: {filename}")
     return int(match.group(1)), int(match.group(2))
 
 
@@ -64,60 +69,79 @@ def create_unified_dataset(
     labels_list: List[Dict[str, Any]],
     dataset_name: str = "unknown"
 ) -> List[Dict[str, Any]]:
-    """Creates a unified dataset by matching circuit files with thought labels."""
+    """Creates a unified dataset by matching circuit files with thought labels.
+    
+    Each circuit file (XX_thought_YY_variation.json) maps to one label entry:
+    - The combination of thought_index and variation_index determines which label to use
+    - Formula: label_index = thought_index * variations_per_thought + variation_index
+    """
     all_records = []
     missing_circuits = []
     
-    # Start with all labels and find corresponding circuits
-    for label_data in labels_list:
-        thought_idx = label_data['thought_index']
-        
-        # Look for circuit files for this thought
-        circuit_pattern = f"{thought_idx}_th_thought_*_variation.png.json"
-        matching_circuits = list(circuits_dir.glob(circuit_pattern))
-        
-        if not matching_circuits:
-            # No circuit files for this thought - create record with None circuit data
-            record = {
-                'dataset': dataset_name,
-                'thought_index': thought_idx,
-                'variation_index': None,
-                'filename': None,
-                **label_data,
-                'circuit_data': None,
-            }
-            all_records.append(record)
-            missing_circuits.append(f"No circuit files for thought {thought_idx}")
-        else:
-            # Create ONE record per thought using the first available circuit
-            circuit_filepath = matching_circuits[0]  # Use first circuit variation
-            try:
-                thought_idx_parsed, variation_idx = parse_circuit_filename(circuit_filepath.name)
+    # Get all available circuit files
+    circuit_files = list(circuits_dir.glob("*_thought_*_variation.json"))
+    
+    # Also check for old naming pattern
+    if not circuit_files:
+        circuit_files = list(circuits_dir.glob("*_th_thought_*_variation.png.json"))
+    
+    if not circuit_files:
+        print(f"No circuit files found in {circuits_dir}")
+        return []
+    
+    print(f"Found {len(circuit_files)} circuit files")
+    
+    # Parse all circuit files and map to labels
+    for circuit_filepath in sorted(circuit_files):
+        try:
+            thought_idx, variation_idx = parse_circuit_filename(circuit_filepath.name)
+            
+            # Calculate which label entry this corresponds to
+            # Assuming 5 variations per thought (00-04), but we can determine this dynamically
+            variations_per_thought = 5  # This could be made configurable
+            label_index = thought_idx * variations_per_thought + variation_idx
+            
+            if label_index < len(labels_list):
+                # Get the corresponding label
+                label_data = labels_list[label_index].copy()
+                label_data['thought_index'] = label_index  # Update to match the actual index
+                
+                # Load circuit data
                 circuit_data = load_circuit_data(circuit_filepath)
                 
                 record = {
                     'dataset': dataset_name,
-                    'thought_index': thought_idx,
+                    'thought_index': label_index,
+                    'original_thought_idx': thought_idx,
                     'variation_index': variation_idx,
                     'filename': circuit_filepath.name,
-                    'available_variations': len(matching_circuits),
                     **label_data,
                     'circuit_data': circuit_data,
                 }
                 all_records.append(record)
-            except (ValueError, json.JSONDecodeError) as e:
-                # If first circuit fails, create record with None data
-                record = {
-                    'dataset': dataset_name,
-                    'thought_index': thought_idx,
-                    'variation_index': None,
-                    'filename': None,
-                    'available_variations': len(matching_circuits),
-                    **label_data,
-                    'circuit_data': None,
-                }
-                all_records.append(record)
-                missing_circuits.append(f"Failed to load {circuit_filepath.name}: {e}")
+            else:
+                missing_circuits.append(f"No label for {circuit_filepath.name} (calculated index {label_index})")
+                
+        except (ValueError, json.JSONDecodeError) as e:
+            missing_circuits.append(f"Failed to load {circuit_filepath.name}: {e}")
+    
+    # Add records for labels without circuit data
+    circuit_label_indices = {r['thought_index'] for r in all_records}
+    for i, label_data in enumerate(labels_list):
+        if i not in circuit_label_indices:
+            label_data_copy = label_data.copy()
+            label_data_copy['thought_index'] = i
+            
+            record = {
+                'dataset': dataset_name,
+                'thought_index': i,
+                'original_thought_idx': None,
+                'variation_index': None,
+                'filename': None,
+                **label_data_copy,
+                'circuit_data': None,
+            }
+            all_records.append(record)
 
     print(f"\n--- 📊 {dataset_name.upper()} Dataset Loading Stats ---")
     print(f"Total records created: {len(all_records)}")
