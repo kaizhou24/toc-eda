@@ -277,6 +277,226 @@ def calculate_percentiles(circuit_data: Dict[str, Any],
         return {f'p{p}': None for p in percentiles}
 
 
+def calculate_pca_compass_alignment(circuits_data: List[Dict[str, Any]], 
+                                  quality_labels: List[int],
+                                  high_quality_threshold: int = 7) -> Optional[Dict[str, Any]]:
+    """Calculate PCA-based compass alignment for circuit quality analysis.
+    
+    Uses Principal Component Analysis to find the primary direction of variance 
+    among high-quality circuits, then projects all circuits onto this direction.
+    
+    Args:
+        circuits_data: List of circuit dictionaries with edge score data
+        quality_labels: List of quality labels corresponding to circuits
+        high_quality_threshold: Minimum quality label to consider "high quality"
+        
+    Returns:
+        Dictionary with alignment scores, PCA components, and analysis metadata
+    """
+    try:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.decomposition import PCA
+    except ImportError:
+        return None
+    
+    try:
+        if len(circuits_data) != len(quality_labels):
+            raise ValueError("circuits_data and quality_labels must have same length")
+        
+        # Extract edge scores for all circuits
+        all_circuit_vectors = []
+        for circuit_data in circuits_data:
+            scores = extract_edge_scores(circuit_data)
+            if not scores:
+                return None
+            all_circuit_vectors.append(scores)
+        
+        # Ensure all vectors have the same length by padding with zeros
+        max_length = max(len(vec) for vec in all_circuit_vectors)
+        padded_vectors = []
+        for vec in all_circuit_vectors:
+            padded = vec + [0.0] * (max_length - len(vec))
+            padded_vectors.append(padded)
+        
+        all_activations = np.array(padded_vectors)
+        
+        # Filter for high-quality circuits
+        high_quality_mask = np.array(quality_labels) >= high_quality_threshold
+        if not np.any(high_quality_mask):
+            return None
+        
+        high_quality_activations = all_activations[high_quality_mask]
+        
+        # Scale the high-quality data
+        scaler = StandardScaler()
+        scaled_high_quality = scaler.fit_transform(high_quality_activations)
+        
+        # Fit PCA on high-quality circuits
+        pca = PCA(n_components=min(10, len(scaled_high_quality)))
+        pca.fit(scaled_high_quality)
+        
+        # Get the first principal component (compass direction)
+        pca_direction = pca.components_[0]
+        
+        # Scale all activations using the same scaler
+        all_activations_scaled = scaler.transform(all_activations)
+        
+        # Calculate alignment scores for all circuits
+        alignment_scores = all_activations_scaled @ pca_direction
+        
+        return {
+            'alignment_scores': alignment_scores.tolist(),
+            'pca_direction': pca_direction.tolist(),
+            'explained_variance_ratio': float(pca.explained_variance_ratio_[0]),
+            'n_high_quality_circuits': int(np.sum(high_quality_mask)),
+            'scaler_mean': scaler.mean_.tolist(),
+            'scaler_scale': scaler.scale_.tolist()
+        }
+        
+    except Exception:
+        return None
+
+
+def calculate_probe_compass_alignment(circuits_data: List[Dict[str, Any]], 
+                                    quality_labels: List[int],
+                                    good_threshold: int = 7,
+                                    bad_threshold: int = 3) -> Optional[Dict[str, Any]]:
+    """Calculate supervised probe-based compass alignment for circuit quality analysis.
+    
+    Trains a linear classifier to distinguish between high and low quality circuits,
+    then uses the learned weights as a compass direction.
+    
+    Args:
+        circuits_data: List of circuit dictionaries with edge score data
+        quality_labels: List of quality labels corresponding to circuits
+        good_threshold: Minimum quality label to consider "good"
+        bad_threshold: Maximum quality label to consider "bad"
+        
+    Returns:
+        Dictionary with alignment scores, probe weights, and training metadata
+    """
+    try:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.linear_model import LogisticRegression
+    except ImportError:
+        return None
+    
+    try:
+        if len(circuits_data) != len(quality_labels):
+            raise ValueError("circuits_data and quality_labels must have same length")
+        
+        # Extract edge scores for all circuits
+        all_circuit_vectors = []
+        for circuit_data in circuits_data:
+            scores = extract_edge_scores(circuit_data)
+            if not scores:
+                return None
+            all_circuit_vectors.append(scores)
+        
+        # Ensure all vectors have the same length by padding with zeros
+        max_length = max(len(vec) for vec in all_circuit_vectors)
+        padded_vectors = []
+        for vec in all_circuit_vectors:
+            padded = vec + [0.0] * (max_length - len(vec))
+            padded_vectors.append(padded)
+        
+        all_activations = np.array(padded_vectors)
+        quality_array = np.array(quality_labels)
+        
+        # Create binary labels for probe training
+        binary_labels = []
+        training_indices = []
+        
+        for i, quality in enumerate(quality_labels):
+            if quality <= bad_threshold:
+                binary_labels.append(0)
+                training_indices.append(i)
+            elif quality >= good_threshold:
+                binary_labels.append(1)
+                training_indices.append(i)
+        
+        if len(training_indices) < 2:
+            return None
+        
+        # Prepare training data
+        training_activations = all_activations[training_indices]
+        training_labels = np.array(binary_labels)
+        
+        # Scale the training data
+        scaler = StandardScaler()
+        training_scaled = scaler.fit_transform(training_activations)
+        
+        # Train the probe
+        probe = LogisticRegression(class_weight='balanced', random_state=42)
+        probe.fit(training_scaled, training_labels)
+        
+        # Get probe direction (weights)
+        probe_direction = probe.coef_[0]
+        
+        # Scale all activations and calculate alignment
+        all_activations_scaled = scaler.transform(all_activations)
+        alignment_scores = all_activations_scaled @ probe_direction
+        
+        # Calculate training accuracy
+        training_accuracy = probe.score(training_scaled, training_labels)
+        
+        return {
+            'alignment_scores': alignment_scores.tolist(),
+            'probe_direction': probe_direction.tolist(),
+            'training_accuracy': float(training_accuracy),
+            'n_training_samples': len(training_indices),
+            'n_good_samples': int(np.sum(training_labels == 1)),
+            'n_bad_samples': int(np.sum(training_labels == 0)),
+            'scaler_mean': scaler.mean_.tolist(),
+            'scaler_scale': scaler.scale_.tolist()
+        }
+        
+    except Exception:
+        return None
+
+
+def analyze_compass_performance(alignment_scores: List[float], 
+                              quality_labels: List[int]) -> Dict[str, float]:
+    """Analyze how well compass alignment correlates with quality labels.
+    
+    Args:
+        alignment_scores: List of alignment scores from compass analysis
+        quality_labels: List of corresponding quality labels
+        
+    Returns:
+        Dictionary with correlation statistics
+    """
+    try:
+        from scipy.stats import pearsonr, spearmanr
+        
+        if len(alignment_scores) != len(quality_labels):
+            raise ValueError("alignment_scores and quality_labels must have same length")
+        
+        # Remove any NaN values
+        valid_pairs = [(score, label) for score, label in zip(alignment_scores, quality_labels) 
+                      if np.isfinite(score)]
+        
+        if len(valid_pairs) < 3:
+            return {'pearson_r': None, 'pearson_p': None, 'spearman_r': None, 'spearman_p': None}
+        
+        scores, labels = zip(*valid_pairs)
+        
+        # Calculate correlations
+        pearson_r, pearson_p = pearsonr(scores, labels)
+        spearman_r, spearman_p = spearmanr(scores, labels)
+        
+        return {
+            'pearson_r': float(pearson_r),
+            'pearson_p': float(pearson_p),
+            'spearman_r': float(spearman_r),
+            'spearman_p': float(spearman_p),
+            'n_valid_samples': len(valid_pairs)
+        }
+        
+    except Exception:
+        return {'pearson_r': None, 'pearson_p': None, 'spearman_r': None, 'spearman_p': None}
+
+
 # Example usage and testing functions
 if __name__ == '__main__':
     from data_loader import load_and_build_dataframe

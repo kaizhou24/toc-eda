@@ -511,6 +511,7 @@ def plot_quality_clustering_analysis(df_metrics: pd.DataFrame,
                 patch.set_alpha(0.7)
         
         axes[i].set_title(f'{metric_label} by Quality')
+        axes[i].set_xlabel('Quality')
         axes[i].set_ylabel(metric_label)
         axes[i].grid(True, alpha=0.3)
     
@@ -563,7 +564,8 @@ def plot_pairwise_metric_relationships(df_metrics: pd.DataFrame,
                     metric_values = symmetric_log_transform(metric_values)
                 
                 axes[i, j].hist(metric_values, bins=20, alpha=0.7, edgecolor='black')
-                axes[i, j].set_title(f'{metric_x}')
+                axes[i, j].set_xlabel(f'{"Log(" + metric_x + ")" if apply_log_transform else metric_x}')
+                axes[i, j].set_ylabel('Frequency')
             else:
                 # Off-diagonal: scatter plot
                 x_values = clean_data[metric_x].values
@@ -580,10 +582,9 @@ def plot_pairwise_metric_relationships(df_metrics: pd.DataFrame,
                                      c=[colors[k]], label=f'Q{label}', 
                                      alpha=0.7, s=30)
                 
-                if i == n_metrics - 1:  # Bottom row
-                    axes[i, j].set_xlabel(f'{"Log(" + metric_x + ")" if apply_log_transform else metric_x}')
-                if j == 0:  # Left column
-                    axes[i, j].set_ylabel(f'{"Log(" + metric_y + ")" if apply_log_transform else metric_y}')
+                # Add axis labels to all scatter plots
+                axes[i, j].set_xlabel(f'{"Log(" + metric_x + ")" if apply_log_transform else metric_x}')
+                axes[i, j].set_ylabel(f'{"Log(" + metric_y + ")" if apply_log_transform else metric_y}')
                 
                 # Add legend to top-right plot
                 if i == 0 and j == n_metrics - 1:
@@ -594,3 +595,223 @@ def plot_pairwise_metric_relationships(df_metrics: pd.DataFrame,
     plt.suptitle('Pairwise Metric Relationships by Quality Label', fontsize=16, y=0.98)
     plt.tight_layout()
     return fig
+
+
+def plot_compass_analysis(df_metrics: pd.DataFrame,
+                         compass_type: str = 'both',
+                         figsize: Tuple[int, int] = (16, 6)) -> plt.Figure:
+    """Plot compass alignment analysis results.
+    
+    Args:
+        df_metrics: DataFrame with quality_label and compass alignment columns
+        compass_type: Type of compass to plot ('pca', 'probe', or 'both')
+        figsize: Figure size tuple
+        
+    Returns:
+        Matplotlib figure object
+    """
+    required_cols = ['quality_label']
+    
+    if compass_type == 'pca':
+        required_cols.append('pca_alignment')
+        n_plots = 1
+    elif compass_type == 'probe':
+        required_cols.append('probe_alignment')
+        n_plots = 1
+    else:  # both
+        required_cols.extend(['pca_alignment', 'probe_alignment'])
+        n_plots = 2
+    
+    # Check if required columns exist
+    missing_cols = [col for col in required_cols if col not in df_metrics.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+    
+    # Filter valid data
+    valid_data = df_metrics.dropna(subset=required_cols)
+    if valid_data.empty:
+        raise ValueError("No valid data found for compass analysis")
+    
+    fig, axes = plt.subplots(1, n_plots, figsize=figsize)
+    if n_plots == 1:
+        axes = [axes]
+    
+    unique_labels = sorted(valid_data['quality_label'].unique())
+    colors = plt.cm.viridis(np.linspace(0, 1, len(unique_labels)))
+    
+    plot_idx = 0
+    
+    if compass_type in ['pca', 'both']:
+        sns.boxplot(ax=axes[plot_idx], x='quality_label', y='pca_alignment', data=valid_data)
+        axes[plot_idx].set_title('PCA Compass Alignment by Quality Label')
+        axes[plot_idx].set_xlabel('Quality Label')
+        axes[plot_idx].set_ylabel('PCA Alignment Score')
+        axes[plot_idx].grid(True, alpha=0.3)
+        plot_idx += 1
+    
+    if compass_type in ['probe', 'both']:
+        sns.boxplot(ax=axes[plot_idx], x='quality_label', y='probe_alignment', data=valid_data)
+        axes[plot_idx].set_title('Probe Compass Alignment by Quality Label')
+        axes[plot_idx].set_xlabel('Quality Label')
+        axes[plot_idx].set_ylabel('Probe Alignment Score')
+        axes[plot_idx].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
+
+
+def plot_compass_correlation_analysis(df_metrics: pd.DataFrame,
+                                    figsize: Tuple[int, int] = (15, 10)) -> plt.Figure:
+    """Create comprehensive correlation analysis for compass alignments.
+    
+    Args:
+        df_metrics: DataFrame with quality_label and compass alignment columns
+        figsize: Figure size tuple
+        
+    Returns:
+        Matplotlib figure object
+    """
+    required_cols = ['quality_label', 'pca_alignment', 'probe_alignment']
+    missing_cols = [col for col in required_cols if col not in df_metrics.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns: {missing_cols}")
+    
+    valid_data = df_metrics.dropna(subset=required_cols)
+    if valid_data.empty:
+        raise ValueError("No valid data found for compass correlation analysis")
+    
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    
+    # Scatter plot: PCA vs Quality
+    axes[0, 0].scatter(valid_data['quality_label'], valid_data['pca_alignment'], 
+                      alpha=0.6, s=50, color='blue')
+    axes[0, 0].set_xlabel('Quality Label')
+    axes[0, 0].set_ylabel('PCA Alignment Score')
+    axes[0, 0].set_title('PCA Alignment vs Quality Label')
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    # Calculate and display correlation
+    from scipy.stats import pearsonr, spearmanr
+    pca_pearson_r, pca_pearson_p = pearsonr(valid_data['quality_label'], valid_data['pca_alignment'])
+    axes[0, 0].text(0.05, 0.95, f'Pearson r = {pca_pearson_r:.3f}\np = {pca_pearson_p:.3e}', 
+                   transform=axes[0, 0].transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Scatter plot: Probe vs Quality
+    axes[0, 1].scatter(valid_data['quality_label'], valid_data['probe_alignment'], 
+                      alpha=0.6, s=50, color='red')
+    axes[0, 1].set_xlabel('Quality Label')
+    axes[0, 1].set_ylabel('Probe Alignment Score')
+    axes[0, 1].set_title('Probe Alignment vs Quality Label')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    probe_pearson_r, probe_pearson_p = pearsonr(valid_data['quality_label'], valid_data['probe_alignment'])
+    axes[0, 1].text(0.05, 0.95, f'Pearson r = {probe_pearson_r:.3f}\np = {probe_pearson_p:.3e}', 
+                   transform=axes[0, 1].transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Scatter plot: PCA vs Probe alignment
+    axes[1, 0].scatter(valid_data['pca_alignment'], valid_data['probe_alignment'], 
+                      alpha=0.6, s=50, color='green')
+    axes[1, 0].set_xlabel('PCA Alignment Score')
+    axes[1, 0].set_ylabel('Probe Alignment Score')
+    axes[1, 0].set_title('PCA vs Probe Alignment')
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    pca_probe_r, pca_probe_p = pearsonr(valid_data['pca_alignment'], valid_data['probe_alignment'])
+    axes[1, 0].text(0.05, 0.95, f'Pearson r = {pca_probe_r:.3f}\np = {pca_probe_p:.3e}', 
+                   transform=axes[1, 0].transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Summary statistics table
+    axes[1, 1].axis('off')
+    
+    # Create summary table
+    summary_data = [
+        ['Metric', 'Pearson r', 'Pearson p', 'Spearman r', 'Spearman p'],
+        ['PCA vs Quality', f'{pca_pearson_r:.3f}', f'{pca_pearson_p:.2e}', '', ''],
+        ['Probe vs Quality', f'{probe_pearson_r:.3f}', f'{probe_pearson_p:.2e}', '', ''],
+        ['PCA vs Probe', f'{pca_probe_r:.3f}', f'{pca_probe_p:.2e}', '', '']
+    ]
+    
+    # Add Spearman correlations
+    pca_spearman_r, pca_spearman_p = spearmanr(valid_data['quality_label'], valid_data['pca_alignment'])
+    probe_spearman_r, probe_spearman_p = spearmanr(valid_data['quality_label'], valid_data['probe_alignment'])
+    pca_probe_spearman_r, pca_probe_spearman_p = spearmanr(valid_data['pca_alignment'], valid_data['probe_alignment'])
+    
+    summary_data[1][3] = f'{pca_spearman_r:.3f}'
+    summary_data[1][4] = f'{pca_spearman_p:.2e}'
+    summary_data[2][3] = f'{probe_spearman_r:.3f}'
+    summary_data[2][4] = f'{probe_spearman_p:.2e}'
+    summary_data[3][3] = f'{pca_probe_spearman_r:.3f}'
+    summary_data[3][4] = f'{pca_probe_spearman_p:.2e}'
+    
+    table = axes[1, 1].table(cellText=summary_data[1:], colLabels=summary_data[0], 
+                           cellLoc='center', loc='center')
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 1.5)
+    axes[1, 1].set_title('Correlation Summary', pad=20)
+    
+    plt.suptitle('Compass Alignment Correlation Analysis', fontsize=16, y=0.98)
+    plt.tight_layout()
+    return fig
+
+
+def calculate_compass_metrics_for_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate compass alignment metrics for all circuits in a dataset.
+    
+    Args:
+        df: DataFrame with circuit_data and quality_label columns
+        
+    Returns:
+        DataFrame with added compass alignment columns
+    """
+    from .calculate_scores import (calculate_pca_compass_alignment, 
+                                 calculate_probe_compass_alignment,
+                                 analyze_compass_performance)
+    
+    # Filter for valid data
+    valid_circuits = df[df['circuit_data'].notna() & df['quality_label'].notna()].copy()
+    
+    if len(valid_circuits) < 3:
+        print("Not enough valid circuits for compass analysis")
+        return df
+    
+    circuits_data = valid_circuits['circuit_data'].tolist()
+    quality_labels = valid_circuits['quality_label'].tolist()
+    
+    # Calculate PCA compass alignment
+    print("Calculating PCA compass alignment...")
+    pca_result = calculate_pca_compass_alignment(circuits_data, quality_labels)
+    
+    # Calculate probe compass alignment
+    print("Calculating probe compass alignment...")
+    probe_result = calculate_probe_compass_alignment(circuits_data, quality_labels)
+    
+    # Initialize alignment columns
+    df['pca_alignment'] = np.nan
+    df['probe_alignment'] = np.nan
+    
+    # Add PCA alignment scores
+    if pca_result is not None:
+        df.loc[valid_circuits.index, 'pca_alignment'] = pca_result['alignment_scores']
+        print(f"PCA compass: {pca_result['n_high_quality_circuits']} high-quality circuits used")
+        print(f"Explained variance ratio: {pca_result['explained_variance_ratio']:.3f}")
+        
+        # Analyze performance
+        pca_performance = analyze_compass_performance(pca_result['alignment_scores'], quality_labels)
+        print(f"PCA-Quality correlation: r={pca_performance.get('pearson_r', 'N/A'):.3f}")
+    
+    # Add probe alignment scores
+    if probe_result is not None:
+        df.loc[valid_circuits.index, 'probe_alignment'] = probe_result['alignment_scores']
+        print(f"Probe compass: {probe_result['n_training_samples']} training samples")
+        print(f"Training accuracy: {probe_result['training_accuracy']:.3f}")
+        print(f"Good/Bad samples: {probe_result['n_good_samples']}/{probe_result['n_bad_samples']}")
+        
+        # Analyze performance
+        probe_performance = analyze_compass_performance(probe_result['alignment_scores'], quality_labels)
+        print(f"Probe-Quality correlation: r={probe_performance.get('pearson_r', 'N/A'):.3f}")
+    
+    return df
