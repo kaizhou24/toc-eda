@@ -497,6 +497,299 @@ def analyze_compass_performance(alignment_scores: List[float],
         return {'pearson_r': None, 'pearson_p': None, 'spearman_r': None, 'spearman_p': None}
 
 
+def calculate_circuit_aggregates(circuit_data: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """Calculate explicit mean/max aggregated moments per circuit.
+    
+    Args:
+        circuit_data: Circuit dictionary with edge score data
+        
+    Returns:
+        Dictionary with mean, max, min, range, and other aggregate statistics
+    """
+    try:
+        scores = extract_edge_scores(circuit_data)
+        if not scores:
+            return {'circuit_mean': None, 'circuit_max': None, 'circuit_min': None, 
+                   'circuit_range': None, 'circuit_sum': None}
+        
+        scores_array = np.array(scores)
+        return {
+            'circuit_mean': float(np.mean(scores_array)),
+            'circuit_max': float(np.max(scores_array)),
+            'circuit_min': float(np.min(scores_array)),
+            'circuit_range': float(np.max(scores_array) - np.min(scores_array)),
+            'circuit_sum': float(np.sum(scores_array))
+        }
+        
+    except (ValueError, TypeError):
+        return {'circuit_mean': None, 'circuit_max': None, 'circuit_min': None,
+               'circuit_range': None, 'circuit_sum': None}
+
+
+def centered_kernel_alignment(X: np.ndarray, Y: np.ndarray) -> Optional[float]:
+    """Compute Centered Kernel Alignment (CKA) between two matrices.
+    
+    CKA measures representational similarity between high-dimensional vectors,
+    answering: "Do these two sets encode similar relationships between data points?"
+    
+    Args:
+        X: First matrix (n_samples, n_features)
+        Y: Second matrix (n_samples, n_features) 
+        
+    Returns:
+        CKA score (0-1, higher means more similar representations)
+    """
+    try:
+        if X.shape[0] != Y.shape[0]:
+            raise ValueError("X and Y must have same number of samples")
+        
+        # Compute Gram matrices
+        K = X @ X.T
+        L = Y @ Y.T
+        
+        # Center the Gram matrices
+        n = K.shape[0]
+        unit = np.ones((n, n))
+        I = np.eye(n)
+        H = I - unit / n
+        
+        Kc = H @ K @ H
+        Lc = H @ L @ H
+        
+        # Compute CKA score
+        numerator = np.sum(Kc * Lc)
+        denominator = np.sqrt(np.sum(Kc * Kc)) * np.sqrt(np.sum(Lc * Lc))
+        
+        if denominator == 0:
+            return None
+        
+        cka_score = numerator / denominator
+        return float(cka_score)
+        
+    except Exception:
+        return None
+
+
+def procrustes_disparity(matrix1: np.ndarray, matrix2: np.ndarray) -> Optional[float]:
+    """Calculate Procrustes disparity between two matrices.
+    
+    Procrustes analysis aligns two shapes by rotation, scaling, and translation,
+    then measures remaining differences. Useful for comparing geometric structures.
+    
+    Args:
+        matrix1: First matrix (n_points, n_dimensions)
+        matrix2: Second matrix (n_points, n_dimensions)
+        
+    Returns:
+        Procrustes disparity (lower means more similar shapes)
+    """
+    try:
+        from scipy.spatial import procrustes
+        _, _, disparity = procrustes(matrix1, matrix2)
+        return float(disparity)
+        
+    except Exception:
+        return None
+
+
+def calculate_circuit_cka_similarity(circuits_data: List[Dict[str, Any]], 
+                                   quality_labels: List[int],
+                                   reference_quality_threshold: int = 7) -> Optional[List[float]]:
+    """Calculate CKA similarity of each circuit to high-quality reference circuits.
+    
+    Args:
+        circuits_data: List of circuit dictionaries
+        quality_labels: List of quality labels for circuits
+        reference_quality_threshold: Minimum quality to include in reference
+        
+    Returns:
+        List of CKA similarity scores for each circuit
+    """
+    try:
+        if len(circuits_data) != len(quality_labels):
+            raise ValueError("circuits_data and quality_labels must have same length")
+        
+        # Extract and pad all circuit vectors
+        all_vectors = []
+        for circuit_data in circuits_data:
+            scores = extract_edge_scores(circuit_data)
+            if not scores:
+                return None
+            all_vectors.append(scores)
+        
+        # Find maximum length and pad vectors
+        max_length = max(len(vec) for vec in all_vectors)
+        padded_vectors = []
+        for vec in all_vectors:
+            padded = vec + [0.0] * (max_length - len(vec))
+            padded_vectors.append(padded)
+        
+        all_circuits_matrix = np.array(padded_vectors)
+        quality_array = np.array(quality_labels)
+        
+        # Create reference from high-quality circuits
+        high_quality_mask = quality_array >= reference_quality_threshold
+        if not np.any(high_quality_mask):
+            return None
+        
+        reference_circuits = all_circuits_matrix[high_quality_mask]
+        
+        # Calculate CKA similarity for each circuit
+        cka_similarities = []
+        for i, circuit_vector in enumerate(all_circuits_matrix):
+            # Reshape to 2D matrices for CKA
+            circuit_matrix = circuit_vector.reshape(1, -1)
+            reference_matrix = reference_circuits.mean(axis=0).reshape(1, -1)
+            
+            # For CKA to work properly, we need multiple samples
+            # Create synthetic samples by adding small noise
+            circuit_samples = np.vstack([
+                circuit_matrix + np.random.normal(0, 0.001, circuit_matrix.shape) 
+                for _ in range(10)
+            ])
+            reference_samples = np.vstack([
+                reference_matrix + np.random.normal(0, 0.001, reference_matrix.shape) 
+                for _ in range(10)
+            ])
+            
+            cka_score = centered_kernel_alignment(circuit_samples, reference_samples)
+            cka_similarities.append(cka_score if cka_score is not None else 0.0)
+        
+        return cka_similarities
+        
+    except Exception:
+        return None
+
+
+def calculate_circuit_procrustes_disparity(circuits_data: List[Dict[str, Any]], 
+                                         quality_labels: List[int],
+                                         reference_quality_threshold: int = 7) -> Optional[List[float]]:
+    """Calculate Procrustes disparity of each circuit to high-quality reference shape.
+    
+    Args:
+        circuits_data: List of circuit dictionaries
+        quality_labels: List of quality labels for circuits  
+        reference_quality_threshold: Minimum quality to include in reference
+        
+    Returns:
+        List of Procrustes disparity scores for each circuit
+    """
+    try:
+        if len(circuits_data) != len(quality_labels):
+            raise ValueError("circuits_data and quality_labels must have same length")
+        
+        # Extract and pad all circuit vectors
+        all_vectors = []
+        for circuit_data in circuits_data:
+            scores = extract_edge_scores(circuit_data)
+            if not scores:
+                return None
+            all_vectors.append(scores)
+        
+        # Find maximum length and pad vectors
+        max_length = max(len(vec) for vec in all_vectors)
+        if max_length < 2:
+            return None  # Need at least 2 dimensions for Procrustes
+        
+        padded_vectors = []
+        for vec in all_vectors:
+            padded = vec + [0.0] * (max_length - len(vec))
+            padded_vectors.append(padded)
+        
+        all_circuits_matrix = np.array(padded_vectors)
+        quality_array = np.array(quality_labels)
+        
+        # Create reference shape from high-quality circuits
+        high_quality_mask = quality_array >= reference_quality_threshold
+        if not np.any(high_quality_mask):
+            return None
+        
+        reference_circuits = all_circuits_matrix[high_quality_mask]
+        reference_shape = reference_circuits.mean(axis=0)
+        
+        # Reshape for Procrustes analysis (needs 2D: points x dimensions)
+        # We'll treat each score as a point in 2D space using its index and value
+        n_points = min(max_length, 100)  # Limit points for computational efficiency
+        reference_points = np.column_stack([
+            np.arange(n_points), 
+            reference_shape[:n_points]
+        ])
+        
+        # Calculate Procrustes disparity for each circuit
+        disparities = []
+        for circuit_vector in all_circuits_matrix:
+            circuit_points = np.column_stack([
+                np.arange(n_points),
+                circuit_vector[:n_points]
+            ])
+            
+            disparity = procrustes_disparity(reference_points, circuit_points)
+            disparities.append(disparity if disparity is not None else float('inf'))
+        
+        return disparities
+        
+    except Exception:
+        return None
+
+
+def statistical_significance_tests(feature_values: List[float], 
+                                 quality_labels: List[int],
+                                 good_threshold: int = 7,
+                                 bad_threshold: int = 3) -> Dict[str, Any]:
+    """Perform statistical significance tests on feature vs quality relationship.
+    
+    Args:
+        feature_values: List of feature values
+        quality_labels: List of quality labels
+        good_threshold: Minimum quality label to consider "good"
+        bad_threshold: Maximum quality label to consider "bad"
+        
+    Returns:
+        Dictionary with test results (Spearman correlation, Mann-Whitney U)
+    """
+    try:
+        from scipy.stats import spearmanr, mannwhitneyu
+        
+        if len(feature_values) != len(quality_labels):
+            raise ValueError("feature_values and quality_labels must have same length")
+        
+        # Remove NaN values
+        valid_pairs = [(f, q) for f, q in zip(feature_values, quality_labels) 
+                      if np.isfinite(f)]
+        
+        if len(valid_pairs) < 3:
+            return {'spearman_r': None, 'spearman_p': None, 
+                   'mannwhitney_u': None, 'mannwhitney_p': None}
+        
+        features, qualities = zip(*valid_pairs)
+        
+        # Spearman rank correlation
+        spearman_r, spearman_p = spearmanr(features, qualities)
+        
+        # Mann-Whitney U test (good vs bad groups)
+        good_features = [f for f, q in valid_pairs if q >= good_threshold]
+        bad_features = [f for f, q in valid_pairs if q <= bad_threshold]
+        
+        if len(good_features) < 1 or len(bad_features) < 1:
+            mannwhitney_u, mannwhitney_p = None, None
+        else:
+            mannwhitney_u, mannwhitney_p = mannwhitneyu(good_features, bad_features)
+        
+        return {
+            'spearman_r': float(spearman_r),
+            'spearman_p': float(spearman_p),
+            'mannwhitney_u': float(mannwhitney_u) if mannwhitney_u is not None else None,
+            'mannwhitney_p': float(mannwhitney_p) if mannwhitney_p is not None else None,
+            'n_good_samples': len(good_features),
+            'n_bad_samples': len(bad_features),
+            'n_valid_samples': len(valid_pairs)
+        }
+        
+    except Exception:
+        return {'spearman_r': None, 'spearman_p': None,
+               'mannwhitney_u': None, 'mannwhitney_p': None}
+
+
 # Example usage and testing functions
 if __name__ == '__main__':
     from data_loader import load_and_build_dataframe

@@ -815,3 +815,448 @@ def calculate_compass_metrics_for_dataset(df: pd.DataFrame) -> pd.DataFrame:
         print(f"Probe-Quality correlation: r={probe_performance.get('pearson_r', 'N/A'):.3f}")
     
     return df
+
+
+def calculate_advanced_metrics_for_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate advanced geometric metrics (CKA, Procrustes, aggregates) for all circuits.
+    
+    Args:
+        df: DataFrame with circuit_data and quality_label columns
+        
+    Returns:
+        DataFrame with added advanced metric columns
+    """
+    from .calculate_scores import (calculate_circuit_aggregates,
+                                 calculate_circuit_cka_similarity,
+                                 calculate_circuit_procrustes_disparity)
+    
+    # Filter for valid data
+    valid_circuits = df[df['circuit_data'].notna() & df['quality_label'].notna()].copy()
+    
+    if len(valid_circuits) < 3:
+        print("Not enough valid circuits for advanced analysis")
+        return df
+    
+    circuits_data = valid_circuits['circuit_data'].tolist()
+    quality_labels = valid_circuits['quality_label'].tolist()
+    
+    # Initialize new columns
+    df['circuit_mean'] = np.nan
+    df['circuit_max'] = np.nan
+    df['circuit_min'] = np.nan
+    df['circuit_range'] = np.nan
+    df['circuit_sum'] = np.nan
+    df['cka_similarity'] = np.nan
+    df['procrustes_disparity'] = np.nan
+    
+    # Calculate circuit aggregates for each individual circuit
+    print("Calculating circuit aggregate statistics...")
+    for idx in valid_circuits.index:
+        circuit_data = valid_circuits.loc[idx, 'circuit_data']
+        aggregates = calculate_circuit_aggregates(circuit_data)
+        
+        for key, value in aggregates.items():
+            df.loc[idx, key] = value
+    
+    # Calculate CKA similarities
+    print("Calculating CKA similarities...")
+    cka_scores = calculate_circuit_cka_similarity(circuits_data, quality_labels)
+    if cka_scores is not None:
+        df.loc[valid_circuits.index, 'cka_similarity'] = cka_scores
+        print(f"CKA similarities calculated for {len(cka_scores)} circuits")
+    
+    # Calculate Procrustes disparities
+    print("Calculating Procrustes disparities...")
+    procrustes_scores = calculate_circuit_procrustes_disparity(circuits_data, quality_labels)
+    if procrustes_scores is not None:
+        df.loc[valid_circuits.index, 'procrustes_disparity'] = procrustes_scores
+        print(f"Procrustes disparities calculated for {len(procrustes_scores)} circuits")
+    
+    return df
+
+
+def random_forest_analysis(df: pd.DataFrame, 
+                          feature_columns: List[str] = None,
+                          target_column: str = 'quality_label',
+                          test_size: float = 0.3) -> Dict[str, Any]:
+    """Perform Random Forest analysis with permutation importance.
+    
+    Args:
+        df: DataFrame with features and target
+        feature_columns: List of feature column names to use
+        target_column: Name of target column to predict
+        test_size: Proportion of data to use for testing
+        
+    Returns:
+        Dictionary with model performance and feature importance results
+    """
+    try:
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.model_selection import train_test_split
+        from sklearn.inspection import permutation_importance
+        from sklearn.preprocessing import StandardScaler
+        
+        if feature_columns is None:
+            # Use common numerical features
+            feature_columns = [
+                'skewness', 'kurtosis', 'avg_jaccard_similarity', 'circuit_mean', 
+                'circuit_max', 'circuit_range', 'pca_alignment', 'probe_alignment',
+                'cka_similarity', 'procrustes_disparity'
+            ]
+        
+        # Filter to available features
+        available_features = [col for col in feature_columns if col in df.columns]
+        if len(available_features) < 2:
+            return {'error': 'Not enough available features for Random Forest analysis'}
+        
+        # Prepare data
+        ml_df = df.dropna(subset=available_features + [target_column])
+        if len(ml_df) < 10:
+            return {'error': 'Not enough valid samples for Random Forest analysis'}
+        
+        X = ml_df[available_features]
+        y = ml_df[target_column]
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42
+        )
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Train Random Forest
+        rf = RandomForestRegressor(n_estimators=100, random_state=42)
+        rf.fit(X_train_scaled, y_train)
+        
+        # Calculate scores
+        train_score = rf.score(X_train_scaled, y_train)
+        test_score = rf.score(X_test_scaled, y_test)
+        
+        # Calculate permutation importance
+        perm_importance = permutation_importance(
+            rf, X_test_scaled, y_test, n_repeats=10, random_state=42
+        )
+        
+        # Organize results
+        feature_importance = []
+        for i, feature in enumerate(available_features):
+            feature_importance.append({
+                'feature': feature,
+                'importance_mean': float(perm_importance.importances_mean[i]),
+                'importance_std': float(perm_importance.importances_std[i])
+            })
+        
+        # Sort by importance
+        feature_importance.sort(key=lambda x: x['importance_mean'], reverse=True)
+        
+        return {
+            'train_r2': float(train_score),
+            'test_r2': float(test_score),
+            'n_features': len(available_features),
+            'n_train_samples': len(X_train),
+            'n_test_samples': len(X_test),
+            'feature_importance': feature_importance,
+            'features_used': available_features
+        }
+        
+    except Exception as e:
+        return {'error': f'Random Forest analysis failed: {str(e)}'}
+
+
+def plot_random_forest_importance(rf_results: Dict[str, Any],
+                                 figsize: Tuple[int, int] = (12, 8)) -> plt.Figure:
+    """Plot Random Forest feature importance results.
+    
+    Args:
+        rf_results: Results dictionary from random_forest_analysis
+        figsize: Figure size tuple
+        
+    Returns:
+        Matplotlib figure object
+    """
+    if 'error' in rf_results:
+        raise ValueError(f"Cannot plot: {rf_results['error']}")
+    
+    importance_data = rf_results['feature_importance']
+    features = [item['feature'] for item in importance_data]
+    means = [item['importance_mean'] for item in importance_data]
+    stds = [item['importance_std'] for item in importance_data]
+    
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    
+    # Bar plot of feature importance
+    y_pos = np.arange(len(features))
+    axes[0].barh(y_pos, means, xerr=stds, alpha=0.7, capsize=3)
+    axes[0].set_yticks(y_pos)
+    axes[0].set_yticklabels(features)
+    axes[0].set_xlabel('Permutation Importance')
+    axes[0].set_title('Random Forest Feature Importance')
+    axes[0].grid(True, alpha=0.3)
+    
+    # Model performance text
+    axes[1].axis('off')
+    performance_text = [
+        f"Model Performance:",
+        f"",
+        f"Training R²: {rf_results['train_r2']:.3f}",
+        f"Test R²: {rf_results['test_r2']:.3f}",
+        f"",
+        f"Dataset Info:",
+        f"Features used: {rf_results['n_features']}",
+        f"Training samples: {rf_results['n_train_samples']}",
+        f"Test samples: {rf_results['n_test_samples']}",
+        f"",
+        f"Top 3 Features:",
+    ]
+    
+    # Add top 3 features
+    for i, item in enumerate(importance_data[:3]):
+        performance_text.append(
+            f"{i+1}. {item['feature']}: {item['importance_mean']:.3f}"
+        )
+    
+    axes[1].text(0.1, 0.9, '\n'.join(performance_text), 
+                transform=axes[1].transAxes, fontsize=12,
+                verticalalignment='top', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
+    
+    plt.tight_layout()
+    return fig
+
+
+def umap_clustering_analysis(df: pd.DataFrame, 
+                            feature_columns: List[str] = None,
+                            color_column: str = 'quality_label',
+                            n_neighbors: int = 15,
+                            min_dist: float = 0.1) -> Tuple[plt.Figure, np.ndarray]:
+    """Perform UMAP dimensionality reduction and clustering analysis.
+    
+    Args:
+        df: DataFrame with features
+        feature_columns: List of feature column names to use
+        color_column: Column to use for coloring points
+        n_neighbors: UMAP n_neighbors parameter
+        min_dist: UMAP min_dist parameter
+        
+    Returns:
+        Tuple of (matplotlib figure, UMAP embedding array)
+    """
+    try:
+        import umap.umap_ as umap
+        from sklearn.preprocessing import StandardScaler
+        
+        if feature_columns is None:
+            # Use numerical features available
+            feature_columns = [
+                'skewness', 'kurtosis', 'avg_jaccard_similarity', 'circuit_mean',
+                'circuit_max', 'circuit_range', 'pca_alignment', 'probe_alignment',
+                'cka_similarity', 'procrustes_disparity'
+            ]
+        
+        # Filter to available features
+        available_features = [col for col in feature_columns if col in df.columns]
+        if len(available_features) < 2:
+            raise ValueError('Not enough available features for UMAP analysis')
+        
+        # Prepare data
+        analysis_df = df.dropna(subset=available_features + [color_column])
+        if len(analysis_df) < 10:
+            raise ValueError('Not enough valid samples for UMAP analysis')
+        
+        X = analysis_df[available_features].values
+        colors = analysis_df[color_column].values
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Fit UMAP
+        reducer = umap.UMAP(
+            n_neighbors=min(n_neighbors, len(X_scaled)-1),
+            min_dist=min_dist,
+            n_components=2,
+            random_state=42
+        )
+        embedding = reducer.fit_transform(X_scaled)
+        
+        # Create visualization
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # UMAP scatter plot
+        scatter = axes[0].scatter(
+            embedding[:, 0], embedding[:, 1], 
+            c=colors, cmap='viridis', alpha=0.7, s=50
+        )
+        axes[0].set_xlabel('UMAP Dimension 1')
+        axes[0].set_ylabel('UMAP Dimension 2')
+        axes[0].set_title(f'UMAP Projection (Colored by {color_column})')
+        plt.colorbar(scatter, ax=axes[0])
+        axes[0].grid(True, alpha=0.3)
+        
+        # Quality distribution in UMAP space
+        unique_qualities = sorted(analysis_df[color_column].unique())
+        for quality in unique_qualities:
+            mask = colors == quality
+            if np.any(mask):
+                axes[1].scatter(
+                    embedding[mask, 0], embedding[mask, 1],
+                    label=f'{color_column} {quality}', alpha=0.7, s=50
+                )
+        
+        axes[1].set_xlabel('UMAP Dimension 1')
+        axes[1].set_ylabel('UMAP Dimension 2')
+        axes[1].set_title(f'UMAP Projection by {color_column} Groups')
+        axes[1].legend()
+        axes[1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        return fig, embedding
+        
+    except Exception as e:
+        raise ValueError(f'UMAP analysis failed: {str(e)}')
+
+
+def dbscan_clustering_analysis(df: pd.DataFrame,
+                              feature_columns: List[str] = None,
+                              eps: float = 0.5,
+                              min_samples: int = 5) -> Tuple[plt.Figure, np.ndarray]:
+    """Perform DBSCAN clustering analysis on circuit features.
+    
+    Args:
+        df: DataFrame with features
+        feature_columns: List of feature column names to use
+        eps: DBSCAN eps parameter
+        min_samples: DBSCAN min_samples parameter
+        
+    Returns:
+        Tuple of (matplotlib figure, cluster labels array)
+    """
+    try:
+        from sklearn.cluster import DBSCAN
+        from sklearn.preprocessing import StandardScaler
+        
+        if feature_columns is None:
+            feature_columns = [
+                'skewness', 'kurtosis', 'avg_jaccard_similarity', 'circuit_mean',
+                'circuit_max', 'circuit_range', 'pca_alignment', 'probe_alignment',
+                'cka_similarity', 'procrustes_disparity'
+            ]
+        
+        # Filter to available features
+        available_features = [col for col in feature_columns if col in df.columns]
+        if len(available_features) < 2:
+            raise ValueError('Not enough available features for DBSCAN analysis')
+        
+        # Prepare data
+        analysis_df = df.dropna(subset=available_features + ['quality_label'])
+        if len(analysis_df) < 10:
+            raise ValueError('Not enough valid samples for DBSCAN analysis')
+        
+        X = analysis_df[available_features].values
+        quality_labels = analysis_df['quality_label'].values
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        # Perform DBSCAN clustering
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        cluster_labels = dbscan.fit_predict(X_scaled)
+        
+        # Analyze clustering results
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+        
+        # Create visualization
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Use UMAP for 2D visualization if available
+        try:
+            import umap.umap_ as umap
+            reducer = umap.UMAP(n_components=2, random_state=42)
+            embedding = reducer.fit_transform(X_scaled)
+            x_coord, y_coord = embedding[:, 0], embedding[:, 1]
+            coord_label = 'UMAP'
+        except ImportError:
+            # Fallback to first two features
+            x_coord, y_coord = X_scaled[:, 0], X_scaled[:, 1]
+            coord_label = f'{available_features[0]} vs {available_features[1]}'
+        
+        # Plot 1: Clusters
+        scatter1 = axes[0, 0].scatter(x_coord, y_coord, c=cluster_labels, 
+                                     cmap='viridis', alpha=0.7, s=50)
+        axes[0, 0].set_xlabel(f'{coord_label} Dimension 1')
+        axes[0, 0].set_ylabel(f'{coord_label} Dimension 2')
+        axes[0, 0].set_title(f'DBSCAN Clusters (n={n_clusters}, noise={n_noise})')
+        plt.colorbar(scatter1, ax=axes[0, 0])
+        
+        # Plot 2: Quality labels
+        scatter2 = axes[0, 1].scatter(x_coord, y_coord, c=quality_labels, 
+                                     cmap='plasma', alpha=0.7, s=50)
+        axes[0, 1].set_xlabel(f'{coord_label} Dimension 1')
+        axes[0, 1].set_ylabel(f'{coord_label} Dimension 2')
+        axes[0, 1].set_title('True Quality Labels')
+        plt.colorbar(scatter2, ax=axes[0, 1])
+        
+        # Plot 3: Cluster vs Quality analysis
+        if n_clusters > 0:
+            cluster_quality_analysis = []
+            for cluster_id in set(cluster_labels):
+                if cluster_id != -1:  # Ignore noise
+                    cluster_mask = cluster_labels == cluster_id
+                    cluster_qualities = quality_labels[cluster_mask]
+                    cluster_quality_analysis.append({
+                        'cluster': cluster_id,
+                        'size': np.sum(cluster_mask),
+                        'mean_quality': np.mean(cluster_qualities),
+                        'std_quality': np.std(cluster_qualities)
+                    })
+            
+            if cluster_quality_analysis:
+                cluster_ids = [item['cluster'] for item in cluster_quality_analysis]
+                mean_qualities = [item['mean_quality'] for item in cluster_quality_analysis]
+                std_qualities = [item['std_quality'] for item in cluster_quality_analysis]
+                
+                axes[1, 0].bar(cluster_ids, mean_qualities, yerr=std_qualities, 
+                              alpha=0.7, capsize=5)
+                axes[1, 0].set_xlabel('Cluster ID')
+                axes[1, 0].set_ylabel('Mean Quality Label')
+                axes[1, 0].set_title('Average Quality by Cluster')
+                axes[1, 0].grid(True, alpha=0.3)
+        
+        # Plot 4: Summary statistics
+        axes[1, 1].axis('off')
+        summary_text = [
+            f"DBSCAN Clustering Results:",
+            f"",
+            f"Parameters:",
+            f"  eps = {eps}",
+            f"  min_samples = {min_samples}",
+            f"",
+            f"Results:",
+            f"  Number of clusters: {n_clusters}",
+            f"  Number of noise points: {n_noise}",
+            f"  Total samples: {len(cluster_labels)}",
+            f"",
+            f"Features used ({len(available_features)}):",
+        ]
+        
+        for feature in available_features[:5]:  # Show first 5 features
+            summary_text.append(f"  • {feature}")
+        
+        if len(available_features) > 5:
+            summary_text.append(f"  ... and {len(available_features)-5} more")
+        
+        axes[1, 1].text(0.1, 0.9, '\n'.join(summary_text),
+                       transform=axes[1, 1].transAxes, fontsize=10,
+                       verticalalignment='top', fontfamily='monospace',
+                       bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        
+        plt.tight_layout()
+        return fig, cluster_labels
+        
+    except Exception as e:
+        raise ValueError(f'DBSCAN analysis failed: {str(e)}')
