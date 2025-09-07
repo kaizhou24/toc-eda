@@ -110,7 +110,7 @@ def create_circuit_features_csv(dataset_name="test2", output_file=None):
     compass_cols = [col for col in df_features.columns 
                    if 'alignment' in col or col.startswith('pca_') or col.startswith('probe_')]
     basic_cols = ['mean', 'std', 'min', 'max', 'median', 'skewness', 'kurtosis']
-    aggregate_cols = [col for col in df_features.columns if col.startswith('circuit_')]
+    aggregate_cols = [col for col in df_features.columns if col.startswith('circuit_') and col != 'circuit_id']
     percentile_cols = [col for col in df_features.columns if col.startswith('p') and col[1:].isdigit()]
     
     # Build final column order
