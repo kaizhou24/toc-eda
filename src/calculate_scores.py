@@ -455,6 +455,223 @@ def calculate_probe_compass_alignment(circuits_data: List[Dict[str, Any]],
         return None
 
 
+def calculate_mlp_compass_alignment(circuits_data: List[Dict[str, Any]], 
+                                  quality_labels: List[int],
+                                  good_threshold: int = 7,
+                                  bad_threshold: int = 3,
+                                  hidden_layer_sizes: Tuple[int, ...] = (64, 32)) -> Optional[Dict[str, Any]]:
+    """Calculate MLP-based compass alignment for circuit quality analysis.
+    
+    Trains a multi-layer perceptron to distinguish between high and low quality circuits,
+    then uses the decision boundary gradients as a compass direction.
+    
+    Args:
+        circuits_data: List of circuit dictionaries with edge score data
+        quality_labels: List of quality labels corresponding to circuits
+        good_threshold: Minimum quality label to consider "good"
+        bad_threshold: Maximum quality label to consider "bad"
+        hidden_layer_sizes: Hidden layer architecture for MLP
+        
+    Returns:
+        Dictionary with alignment scores, training metadata
+    """
+    try:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.neural_network import MLPClassifier
+    except ImportError:
+        return None
+    
+    try:
+        if len(circuits_data) != len(quality_labels):
+            raise ValueError("circuits_data and quality_labels must have same length")
+        
+        # Extract edge scores for all circuits
+        all_circuit_vectors = []
+        for circuit_data in circuits_data:
+            scores = extract_edge_scores(circuit_data)
+            if not scores:
+                return None
+            all_circuit_vectors.append(scores)
+        
+        # Ensure all vectors have the same length by padding with zeros
+        max_length = max(len(vec) for vec in all_circuit_vectors)
+        padded_vectors = []
+        for vec in all_circuit_vectors:
+            padded = vec + [0.0] * (max_length - len(vec))
+            padded_vectors.append(padded)
+        
+        all_activations = np.array(padded_vectors)
+        quality_array = np.array(quality_labels)
+        
+        # Create binary labels for probe training
+        binary_labels = []
+        training_indices = []
+        
+        for i, quality in enumerate(quality_labels):
+            if quality <= bad_threshold:
+                binary_labels.append(0)
+                training_indices.append(i)
+            elif quality >= good_threshold:
+                binary_labels.append(1)
+                training_indices.append(i)
+        
+        if len(training_indices) < 4:  # Need more samples for MLP
+            return None
+        
+        # Prepare training data
+        training_activations = all_activations[training_indices]
+        training_labels = np.array(binary_labels)
+        
+        # Scale the training data
+        scaler = StandardScaler()
+        training_scaled = scaler.fit_transform(training_activations)
+        
+        # Train the MLP probe
+        mlp = MLPClassifier(hidden_layer_sizes=hidden_layer_sizes,
+                           activation='relu',
+                           solver='adam',
+                           alpha=0.001,
+                           learning_rate='constant',
+                           max_iter=1000,
+                           random_state=42)
+        mlp.fit(training_scaled, training_labels)
+        
+        # Scale all activations and get prediction probabilities
+        all_activations_scaled = scaler.transform(all_activations)
+        
+        # For alignment, use the probability of being "good" class
+        # This gives a continuous measure of how "good" each circuit is
+        probabilities = mlp.predict_proba(all_activations_scaled)
+        # Convert probabilities to alignment scores (difference from neutral)
+        alignment_scores = probabilities[:, 1] - 0.5
+        
+        # Calculate training accuracy
+        training_accuracy = mlp.score(training_scaled, training_labels)
+        
+        return {
+            'alignment_scores': alignment_scores.tolist(),
+            'training_accuracy': float(training_accuracy),
+            'n_training_samples': len(training_indices),
+            'n_good_samples': int(np.sum(training_labels == 1)),
+            'n_bad_samples': int(np.sum(training_labels == 0)),
+            'scaler_mean': scaler.mean_.tolist(),
+            'scaler_scale': scaler.scale_.tolist(),
+            'hidden_layer_sizes': hidden_layer_sizes,
+            'n_features': int(all_activations.shape[1])
+        }
+        
+    except Exception:
+        return None
+
+
+def calculate_svm_compass_alignment(circuits_data: List[Dict[str, Any]], 
+                                  quality_labels: List[int],
+                                  good_threshold: int = 7,
+                                  bad_threshold: int = 3,
+                                  kernel: str = 'rbf',
+                                  gamma: str = 'scale') -> Optional[Dict[str, Any]]:
+    """Calculate kernel SVM-based compass alignment for circuit quality analysis.
+    
+    Trains a support vector machine with non-linear kernel to distinguish between 
+    high and low quality circuits, then uses decision function scores for alignment.
+    
+    Args:
+        circuits_data: List of circuit dictionaries with edge score data
+        quality_labels: List of quality labels corresponding to circuits
+        good_threshold: Minimum quality label to consider "good"
+        bad_threshold: Maximum quality label to consider "bad"
+        kernel: Kernel type ('rbf', 'poly', 'sigmoid')
+        gamma: Kernel coefficient
+        
+    Returns:
+        Dictionary with alignment scores, training metadata
+    """
+    try:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import SVC
+    except ImportError:
+        return None
+    
+    try:
+        if len(circuits_data) != len(quality_labels):
+            raise ValueError("circuits_data and quality_labels must have same length")
+        
+        # Extract edge scores for all circuits
+        all_circuit_vectors = []
+        for circuit_data in circuits_data:
+            scores = extract_edge_scores(circuit_data)
+            if not scores:
+                return None
+            all_circuit_vectors.append(scores)
+        
+        # Ensure all vectors have the same length by padding with zeros
+        max_length = max(len(vec) for vec in all_circuit_vectors)
+        padded_vectors = []
+        for vec in all_circuit_vectors:
+            padded = vec + [0.0] * (max_length - len(vec))
+            padded_vectors.append(padded)
+        
+        all_activations = np.array(padded_vectors)
+        quality_array = np.array(quality_labels)
+        
+        # Create binary labels for probe training
+        binary_labels = []
+        training_indices = []
+        
+        for i, quality in enumerate(quality_labels):
+            if quality <= bad_threshold:
+                binary_labels.append(0)
+                training_indices.append(i)
+            elif quality >= good_threshold:
+                binary_labels.append(1)
+                training_indices.append(i)
+        
+        if len(training_indices) < 4:  # Need more samples for SVM
+            return None
+        
+        # Prepare training data
+        training_activations = all_activations[training_indices]
+        training_labels = np.array(binary_labels)
+        
+        # Scale the training data
+        scaler = StandardScaler()
+        training_scaled = scaler.fit_transform(training_activations)
+        
+        # Train the SVM probe
+        svm = SVC(kernel=kernel, 
+                  gamma=gamma,
+                  class_weight='balanced',
+                  probability=False,  # We'll use decision_function
+                  random_state=42)
+        svm.fit(training_scaled, training_labels)
+        
+        # Scale all activations and get decision function scores
+        all_activations_scaled = scaler.transform(all_activations)
+        
+        # Use decision function for alignment scores
+        alignment_scores = svm.decision_function(all_activations_scaled)
+        
+        # Calculate training accuracy
+        training_accuracy = svm.score(training_scaled, training_labels)
+        
+        return {
+            'alignment_scores': alignment_scores.tolist(),
+            'training_accuracy': float(training_accuracy),
+            'n_training_samples': len(training_indices),
+            'n_good_samples': int(np.sum(training_labels == 1)),
+            'n_bad_samples': int(np.sum(training_labels == 0)),
+            'scaler_mean': scaler.mean_.tolist(),
+            'scaler_scale': scaler.scale_.tolist(),
+            'kernel': kernel,
+            'gamma': gamma,
+            'n_support_vectors': int(svm.n_support_.sum()),
+            'n_features': int(all_activations.shape[1])
+        }
+        
+    except Exception:
+        return None
+
+
 def analyze_compass_performance(alignment_scores: List[float], 
                               quality_labels: List[int]) -> Dict[str, float]:
     """Analyze how well compass alignment correlates with quality labels.

@@ -660,6 +660,73 @@ def plot_compass_analysis(df_metrics: pd.DataFrame,
     return fig
 
 
+def plot_multi_probe_compass_analysis(df_metrics: pd.DataFrame,
+                                    probe_types: List[str] = ['linear', 'mlp', 'svm'],
+                                    include_pca: bool = True,
+                                    figsize: Tuple[int, int] = None) -> plt.Figure:
+    """Plot compass alignment analysis for multiple probe types.
+    
+    Args:
+        df_metrics: DataFrame with quality_label and compass alignment columns
+        probe_types: List of probe types to plot
+        include_pca: Whether to include PCA alignment
+        figsize: Figure size tuple
+        
+    Returns:
+        Matplotlib figure object
+    """
+    # Determine what to plot
+    plot_columns = []
+    plot_labels = []
+    
+    if include_pca and 'pca_alignment' in df_metrics.columns:
+        plot_columns.append('pca_alignment')
+        plot_labels.append('PCA')
+    
+    for probe_type in probe_types:
+        column_name = f'{probe_type}_probe_alignment'
+        if column_name in df_metrics.columns:
+            plot_columns.append(column_name)
+            plot_labels.append(f'{probe_type.upper()} Probe')
+    
+    if not plot_columns:
+        raise ValueError("No valid alignment columns found")
+    
+    n_plots = len(plot_columns)
+    if figsize is None:
+        figsize = (5 * n_plots, 6)
+    
+    # Check for required data
+    required_cols = ['quality_label'] + plot_columns
+    valid_data = df_metrics.dropna(subset=required_cols)
+    if valid_data.empty:
+        raise ValueError("No valid data found for compass analysis")
+    
+    fig, axes = plt.subplots(1, n_plots, figsize=figsize)
+    if n_plots == 1:
+        axes = [axes]
+    
+    for i, (column, label) in enumerate(zip(plot_columns, plot_labels)):
+        sns.boxplot(ax=axes[i], x='quality_label', y=column, data=valid_data)
+        axes[i].set_title(f'{label} Compass Alignment by Quality Label')
+        axes[i].set_xlabel('Quality Label')
+        axes[i].set_ylabel(f'{label} Alignment Score')
+        axes[i].grid(True, alpha=0.3)
+        
+        # Add correlation info
+        from scipy.stats import pearsonr
+        try:
+            r, p = pearsonr(valid_data['quality_label'], valid_data[column])
+            axes[i].text(0.05, 0.95, f'r = {r:.3f}\np = {p:.3e}', 
+                        transform=axes[i].transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        except Exception:
+            pass
+    
+    plt.tight_layout()
+    return fig
+
+
 def plot_compass_correlation_analysis(df_metrics: pd.DataFrame,
                                     figsize: Tuple[int, int] = (15, 10)) -> plt.Figure:
     """Create comprehensive correlation analysis for compass alignments.
@@ -758,17 +825,21 @@ def plot_compass_correlation_analysis(df_metrics: pd.DataFrame,
     return fig
 
 
-def calculate_compass_metrics_for_dataset(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_compass_metrics_for_dataset(df: pd.DataFrame, 
+                                        probe_types: List[str] = ['linear', 'mlp', 'svm']) -> pd.DataFrame:
     """Calculate compass alignment metrics for all circuits in a dataset.
     
     Args:
         df: DataFrame with circuit_data and quality_label columns
+        probe_types: List of probe types to use ('linear', 'mlp', 'svm')
         
     Returns:
         DataFrame with added compass alignment columns
     """
     from .calculate_scores import (calculate_pca_compass_alignment, 
                                  calculate_probe_compass_alignment,
+                                 calculate_mlp_compass_alignment,
+                                 calculate_svm_compass_alignment,
                                  analyze_compass_performance)
     
     # Filter for valid data
@@ -785,13 +856,29 @@ def calculate_compass_metrics_for_dataset(df: pd.DataFrame) -> pd.DataFrame:
     print("Calculating PCA compass alignment...")
     pca_result = calculate_pca_compass_alignment(circuits_data, quality_labels)
     
-    # Calculate probe compass alignment
-    print("Calculating probe compass alignment...")
-    probe_result = calculate_probe_compass_alignment(circuits_data, quality_labels)
-    
     # Initialize alignment columns
     df['pca_alignment'] = np.nan
-    df['probe_alignment'] = np.nan
+    probe_results = {}
+    
+    # Calculate different types of probe alignment
+    for probe_type in probe_types:
+        column_name = f'{probe_type}_probe_alignment'
+        df[column_name] = np.nan
+        
+        print(f"Calculating {probe_type} probe compass alignment...")
+        
+        if probe_type == 'linear':
+            probe_result = calculate_probe_compass_alignment(circuits_data, quality_labels)
+        elif probe_type == 'mlp':
+            probe_result = calculate_mlp_compass_alignment(circuits_data, quality_labels)
+        elif probe_type == 'svm':
+            probe_result = calculate_svm_compass_alignment(circuits_data, quality_labels, 
+                                                         kernel='rbf')
+        else:
+            print(f"Unknown probe type: {probe_type}")
+            continue
+            
+        probe_results[probe_type] = probe_result
     
     # Add PCA alignment scores
     if pca_result is not None:
@@ -803,16 +890,29 @@ def calculate_compass_metrics_for_dataset(df: pd.DataFrame) -> pd.DataFrame:
         pca_performance = analyze_compass_performance(pca_result['alignment_scores'], quality_labels)
         print(f"PCA-Quality correlation: r={pca_performance.get('pearson_r', 'N/A'):.3f}")
     
-    # Add probe alignment scores
-    if probe_result is not None:
-        df.loc[valid_circuits.index, 'probe_alignment'] = probe_result['alignment_scores']
-        print(f"Probe compass: {probe_result['n_training_samples']} training samples")
-        print(f"Training accuracy: {probe_result['training_accuracy']:.3f}")
-        print(f"Good/Bad samples: {probe_result['n_good_samples']}/{probe_result['n_bad_samples']}")
+    # Add probe alignment scores and analyze performance
+    for probe_type, probe_result in probe_results.items():
+        column_name = f'{probe_type}_probe_alignment'
         
-        # Analyze performance
-        probe_performance = analyze_compass_performance(probe_result['alignment_scores'], quality_labels)
-        print(f"Probe-Quality correlation: r={probe_performance.get('pearson_r', 'N/A'):.3f}")
+        if probe_result is not None:
+            df.loc[valid_circuits.index, column_name] = probe_result['alignment_scores']
+            print(f"{probe_type.upper()} probe compass: {probe_result['n_training_samples']} training samples")
+            print(f"{probe_type.upper()} training accuracy: {probe_result['training_accuracy']:.3f}")
+            print(f"{probe_type.upper()} good/bad samples: {probe_result['n_good_samples']}/{probe_result['n_bad_samples']}")
+            
+            # Add model-specific info
+            if probe_type == 'mlp' and 'hidden_layer_sizes' in probe_result:
+                print(f"MLP architecture: {probe_result['hidden_layer_sizes']}")
+            elif probe_type == 'svm' and 'n_support_vectors' in probe_result:
+                print(f"SVM support vectors: {probe_result['n_support_vectors']}")
+            
+            # Analyze performance
+            probe_performance = analyze_compass_performance(probe_result['alignment_scores'], quality_labels)
+            print(f"{probe_type.upper()}-Quality correlation: r={probe_performance.get('pearson_r', 'N/A'):.3f}")
+    
+    # Maintain backwards compatibility
+    if 'linear' in probe_types and 'linear_probe_alignment' in df.columns:
+        df['probe_alignment'] = df['linear_probe_alignment']
     
     return df
 
