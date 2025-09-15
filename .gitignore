@@ -49,10 +49,7 @@ Thumbs.db
 data/raw/
 *.log
 
-# Keep outputs directory structure but ignore large files
-outputs/*.png
-outputs/*.pdf
-outputs/*.svg
+# Keep outputs directory structure and track generated files
 !outputs/.gitkeep
 
 # UV lock file (uncomment if you want to exclude)

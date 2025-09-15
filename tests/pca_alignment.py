@@ -65,15 +65,16 @@ def run_compass_analysis(dataset_name="test2"):
     print("="*50)
     
     # Ensure output directory exists
-    os.makedirs("../outputs", exist_ok=True)
+    output_dir = os.path.join(os.path.dirname(__file__), '..', 'outputs')
+    os.makedirs(output_dir, exist_ok=True)
     
     # Basic compass alignment plots
     try:
         print("Creating compass alignment box plots...")
         fig1 = plot_compass_analysis(df_with_compass, compass_type='both')
-        plt.savefig(f'../outputs/{dataset_name}_compass_alignment.png', dpi=150, bbox_inches='tight')
+        plt.savefig(os.path.join(output_dir, f'{dataset_name}_compass_alignment.png'), dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"✓ Saved compass alignment plot: ../outputs/{dataset_name}_compass_alignment.png")
+        print(f"✓ Saved compass alignment plot: {os.path.join(output_dir, f'{dataset_name}_compass_alignment.png')}")
     except Exception as e:
         print(f"Failed to create compass alignment plots: {e}")
     
@@ -81,9 +82,9 @@ def run_compass_analysis(dataset_name="test2"):
     try:
         print("Creating compass correlation analysis...")
         fig2 = plot_compass_correlation_analysis(df_with_compass)
-        plt.savefig(f'../outputs/{dataset_name}_compass_correlation.png', dpi=150, bbox_inches='tight')
+        plt.savefig(os.path.join(output_dir, f'{dataset_name}_compass_correlation.png'), dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"✓ Saved compass correlation analysis: ../outputs/{dataset_name}_compass_correlation.png")
+        print(f"✓ Saved compass correlation analysis: {os.path.join(output_dir, f'{dataset_name}_compass_correlation.png')}")
     except Exception as e:
         print(f"Failed to create compass correlation plots: {e}")
     
